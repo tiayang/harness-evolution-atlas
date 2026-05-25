@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Harness 架构演进图谱 · V0 → V5</title>
+<meta name="description" content="从单层 advisory 到 broker daemon — 一个 LLM agent harness 8 周内 78 hooks / 20 rules / 4 agents 的架构演进、防御分层与失败模式沉淀。">
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+
+<style>
+:root {
+  --bg: #0a0e1a;
+  --bg-2: #131829;
+  --bg-3: #1a2138;
+  --bg-4: #232b44;
+  --border: #2a334d;
+  --border-2: #3b4566;
+  --text: #e5e7eb;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --accent: #6366f1;
+  --accent-2: #818cf8;
+  --success: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #06b6d4;
+  --violet: #8b5cf6;
+  --pink: #ec4899;
+  --teal: #14b8a6;
+  --orange: #f97316;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Noto Sans SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 15px;
+  overflow-x: hidden;
+}
+
+.mono {
+  font-family: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+/* === NAV === */
+nav.top {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(10, 14, 26, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+nav.top .brand {
+  font-weight: 700;
+  font-size: 14px;
+  background: linear-gradient(135deg, var(--accent-2), var(--info));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.02em;
+}
+nav.top .links { display: flex; gap: 18px; flex-wrap: wrap; }
+nav.top a {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color 0.15s;
+}
+nav.top a:hover { color: var(--text); }
+
+/* === HERO === */
+.hero {
+  padding: 80px 24px 60px;
+  text-align: center;
+  background: radial-gradient(ellipse at top, rgba(99,102,241,0.18), transparent 60%);
+  border-bottom: 1px solid var(--border);
+}
+.hero .tagline {
+  display: inline-block;
+  padding: 6px 14px;
+  background: rgba(99,102,241,0.15);
+  border: 1px solid rgba(99,102,241,0.4);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--accent-2);
+  margin-bottom: 24px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.hero h1 {
+  font-size: clamp(32px, 5vw, 52px);
+  font-weight: 800;
+  line-height: 1.15;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, #fff 30%, var(--accent-2) 80%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero .subtitle {
+  font-size: clamp(16px, 2vw, 19px);
+  color: var(--text-muted);
+  max-width: 720px;
+  margin: 0 auto 36px;
+  line-height: 1.6;
+}
+.hero .meta {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.hero .meta span::before { content: "·"; color: var(--border-2); margin-right: 24px; }
+.hero .meta span:first-child::before { display: none; margin: 0; }
+
+/* === STATS === */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.stat {
+  background: var(--bg-2);
+  padding: 28px 16px;
+  text-align: center;
+}
+.stat .num {
+  font-size: 36px;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent-2), var(--info));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.stat .label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.stat .sublabel {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* === SECTION === */
+section.content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 80px 24px;
+  border-bottom: 1px solid var(--border);
+}
+section.content.narrow { max-width: 920px; }
+
+section.content h2 {
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 800;
+  margin-bottom: 8px;
+  letter-spacing: -0.01em;
+}
+section.content h2 .num-prefix {
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-right: 12px;
+  font-size: 0.7em;
+  font-variant-numeric: tabular-nums;
+}
+section.content .section-desc {
+  color: var(--text-muted);
+  font-size: 16px;
+  max-width: 760px;
+  margin-bottom: 40px;
+}
+
+section.content h3 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 36px 0 14px;
+  color: var(--text);
+}
+section.content h4 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 24px 0 10px;
+}
+
+section.content p { margin-bottom: 12px; color: var(--text); }
+section.content ul, section.content ol {
+  margin-left: 22px;
+  margin-bottom: 14px;
+  color: var(--text);
+}
+section.content li { margin-bottom: 6px; }
+section.content strong { color: #fff; font-weight: 600; }
+section.content code {
+  background: var(--bg-3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 0.88em;
+  color: var(--accent-2);
+  border: 1px solid var(--border);
+}
+
+/* === PHASE TIMELINE === */
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.phase {
+  background: var(--bg-2);
+  padding: 28px 28px;
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 28px;
+  align-items: start;
+}
+.phase .v-tag {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.phase .v-tag .v {
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
+  font-family: "SF Mono", monospace;
+  color: var(--accent);
+  letter-spacing: -0.04em;
+}
+.phase .v-tag .date {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.phase .body h3 {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 700;
+}
+.phase .body .motive {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 14px;
+  font-style: italic;
+}
+.phase .body .components {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.phase .body .components .chip {
+  display: inline-block;
+  background: var(--bg-4);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: "SF Mono", monospace;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.phase .body .lesson {
+  background: var(--bg-3);
+  border-left: 3px solid var(--warn);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-radius: 0 4px 4px 0;
+}
+.phase .body .lesson strong { color: var(--warn); }
+
+.phase[data-v="V0"] .v { color: var(--text-dim); }
+.phase[data-v="V1"] .v { color: var(--info); }
+.phase[data-v="V2"] .v { color: var(--teal); }
+.phase[data-v="V3"] .v { color: var(--violet); }
+.phase[data-v="V4"] .v { color: var(--orange); }
+.phase[data-v="V5"] .v { color: var(--success); }
+
+/* === LAYER CAKE === */
+.layer-cake {
+  display: grid;
+  gap: 6px;
+  margin: 30px 0;
+}
+.layer {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  display: grid;
+  grid-template-columns: 220px 80px 1fr;
+  gap: 16px;
+  align-items: center;
+}
+.layer .lname {
+  font-family: "SF Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-2);
+}
+.layer .lcount {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  background: var(--bg-3);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.layer .ldesc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.layer .ldesc code {
+  font-size: 11px;
+  padding: 1px 4px;
+}
+
+/* domain pills */
+.domain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 20px 0 36px;
+}
+.domain {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  padding: 12px 14px;
+  border-radius: 0 6px 6px 0;
+}
+.domain .dn {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: "SF Mono", monospace;
+  margin-bottom: 4px;
+}
+.domain .dc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.domain[data-d="governance"]   { border-left-color: var(--accent); }
+.domain[data-d="rule_enforce"] { border-left-color: var(--violet); }
+.domain[data-d="security"]     { border-left-color: var(--danger); }
+.domain[data-d="kb"]           { border-left-color: var(--info); }
+.domain[data-d="telemetry"]    { border-left-color: var(--text-muted); }
+.domain[data-d="business"]     { border-left-color: var(--warn); }
+.domain[data-d="grounding"]    { border-left-color: var(--success); }
+.domain[data-d="brand"]        { border-left-color: var(--pink); }
+.domain[data-d="scope"]        { border-left-color: var(--orange); }
+.domain[data-d="critic"]       { border-left-color: var(--teal); }
+.domain[data-d="format"]       { border-left-color: #a78bfa; }
+.domain[data-d="test"]         { border-left-color: #84cc16; }
+
+/* === MERMAID === */
+.mermaid-wrap {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  margin: 24px 0;
+  overflow-x: auto;
+}
+.mermaid { font-family: "SF Mono", monospace !important; }
+
+/* === DEFENSE PATTERN === */
+.pattern {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px;
+  margin-bottom: 24px;
+}
+.pattern .ptitle {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.pattern .ptitle h3 { margin: 0; }
+.pattern .ptitle .tag {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  border: 1px solid var(--border);
+}
+.pattern .pdesc {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 20px;
+}
+.pattern .layers-mini {
+  display: grid;
+  gap: 8px;
+}
+.pattern .layers-mini .lm {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--bg-3);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  align-items: center;
+}
+.pattern .layers-mini .lm .ll {
+  font-family: "SF Mono", monospace;
+  font-weight: 700;
+  color: var(--accent-2);
+  font-size: 12px;
+}
+.pattern .layers-mini .lm .ld {
+  color: var(--text);
+}
+.pattern .layers-mini .lm .lt {
+  font-size: 11px;
+  font-family: "SF Mono", monospace;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  background: var(--bg-4);
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.pattern .layers-mini .lm.floor {
+  background: rgba(16,185,129,0.08);
+  border-color: rgba(16,185,129,0.4);
+}
+.pattern .layers-mini .lm.floor .lt {
+  background: var(--success);
+  color: #052e1c;
+  border: none;
+  font-weight: 700;
+}
+
+/* === PRINCIPLES === */
+.principles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin: 30px 0;
+}
+.principle {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  position: relative;
+}
+.principle .pn {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-family: "SF Mono", monospace;
+  font-size: 28px;
+  font-weight: 900;
+  color: var(--bg-4);
+  line-height: 1;
+}
+.principle h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--accent-2);
+  text-transform: none;
+  letter-spacing: 0;
+  padding-right: 40px;
+}
+.principle p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* === META-FAILURES === */
+.meta-fail {
+  background: linear-gradient(135deg, rgba(239,68,68,0.08), rgba(239,68,68,0.02));
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: 12px;
+  padding: 24px 28px;
+  margin: 24px 0;
+}
+.meta-fail h4 {
+  color: var(--danger);
+  margin-top: 0;
+}
+.meta-fail .mf {
+  padding: 14px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.meta-fail .mf:last-child { border: none; padding-bottom: 0; }
+.meta-fail .mf .mft {
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #fff;
+}
+.meta-fail .mf .mfd {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* === TABLE === */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 18px 0;
+  background: var(--bg-2);
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.tbl th, .tbl td {
+  padding: 11px 14px;
+  text-align: left;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.tbl th {
+  background: var(--bg-3);
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.tbl tr:last-child td { border-bottom: none; }
+.tbl td.mono { font-family: "SF Mono", monospace; font-size: 12px; }
+.tbl td .badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: "SF Mono", monospace;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge.b-hard { background: rgba(239,68,68,0.2); color: #fca5a5; border: 1px solid rgba(239,68,68,0.4); }
+.badge.b-warn { background: rgba(245,158,11,0.2); color: #fcd34d; border: 1px solid rgba(245,158,11,0.4); }
+.badge.b-dry { background: rgba(99,102,241,0.2); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.4); }
+.badge.b-ok { background: rgba(16,185,129,0.2); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.4); }
+
+/* === BLOCKQUOTE === */
+blockquote {
+  background: var(--bg-3);
+  border-left: 4px solid var(--accent);
+  padding: 14px 18px;
+  margin: 18px 0;
+  border-radius: 0 6px 6px 0;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+blockquote cite {
+  display: block;
+  margin-top: 8px;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* === FOOTER === */
+footer {
+  text-align: center;
+  padding: 50px 24px 70px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.8;
+  background: var(--bg);
+}
+footer .links { margin-top: 14px; }
+footer .links a {
+  color: var(--text-muted);
+  margin: 0 10px;
+  text-decoration: none;
+  font-size: 12px;
+}
+footer .links a:hover { color: var(--accent-2); }
+
+/* === RESPONSIVE === */
+@media (max-width: 720px) {
+  .phase { grid-template-columns: 80px 1fr; gap: 16px; padding: 20px; }
+  .phase .v-tag .v { font-size: 24px; }
+  .layer { grid-template-columns: 1fr; gap: 6px; }
+  .layer .lcount { justify-self: start; }
+  section.content { padding: 50px 18px; }
+  .hero { padding: 50px 18px 40px; }
+}
+</style>
+</head>
+
+<body>
+
+<nav class="top">
+  <span class="brand">Claude Code Harness · 架构演进图谱</span>
+  <div class="links">
+    <a href="#timeline">演进时间线</a>
+    <a href="#layers">当前架构</a>
+    <a href="#t4">T4 Broker</a>
+    <a href="#defense">防御分层</a>
+    <a href="#principles">原则与教训</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <span class="tagline">V0 → V5 · 2026-04 → 2026-05 · 8 weeks</span>
+  <h1>从单层 advisory<br>到 Broker Daemon</h1>
+  <p class="subtitle">
+    一个 LLM agent harness 在 8 周内从 CLAUDE.md 单文件演进到 78 hooks + 20 rules + 4 sub-agents + GPG-signed broker daemon
+    的完整记录。这不只是组件清单，是<strong>失败模式驱动的防御分层</strong>。
+  </p>
+  <div class="meta">
+    <span>更新于 2026-05-26</span>
+    <span>Tian / Claude Opus 4.7</span>
+    <span>78 hooks · 20 rules · 4 agents · 6 gates</span>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="num">78</div><div class="label">Hooks</div><div class="sublabel">77 active · 1 deprecated</div></div>
+  <div class="stat"><div class="num">13</div><div class="label">Event Types</div><div class="sublabel">PreTool · Stop · Prompt · ...</div></div>
+  <div class="stat"><div class="num">20</div><div class="label">Rules</div><div class="sublabel">~/.claude/rules/*.md</div></div>
+  <div class="stat"><div class="num">4</div><div class="label">Sub-agents</div><div class="sublabel">researcher · qa · diag · mem</div></div>
+  <div class="stat"><div class="num">6</div><div class="label">Gate Registry</div><div class="sublabel">alignment → closed-loop</div></div>
+  <div class="stat"><div class="num">5</div><div class="label">Major Phases</div><div class="sublabel">V0 → V5</div></div>
+</div>
+
+<!-- ====================================================== -->
+<!-- SECTION 1: 演进时间线                                       -->
+<!-- ====================================================== -->
+<section class="content" id="timeline">
+  <h2><span class="num-prefix">01</span>演进时间线</h2>
+  <p class="section-desc">
+    每个阶段的诞生都对应一类反复失败。新组件不是为了"功能更全"，而是为了让某个具体的失败模式不再发生。
+    每条 lesson 都是真实付出过的成本。
+  </p>
+
+  <div class="timeline">
+
+    <!-- V0 -->
+    <div class="phase" data-v="V0">
+      <div class="v-tag"><div class="v">V0</div><div class="date">~ 2026-04-04</div></div>
+      <div class="body">
+        <h3>Pure Advisory · 单层 CLAUDE.md</h3>
+        <div class="motive">起点。所有约束都在一份提示词里。</div>
+        <div class="components">
+          <span class="chip">~/.claude/CLAUDE.md</span>
+          <span class="chip">project CLAUDE.md</span>
+        </div>
+        <div class="lesson"><strong>失败模式 →</strong>
+          同一类错误反复发生：DoD 漂移、grounding 漂移、scope 越界。"读规则" 不等于 "遵守规则"，
+          后续每个 hook 都是对某条 advisory rule 在某个时刻被忽略的工程化补救。
+        </div>
+      </div>
+    </div>
+
+    <!-- V1 -->
+    <div class="phase" data-v="V1">
+      <div class="v-tag"><div class="v">V1</div><div class="date">2026-04-04 ~ 04-15</div></div>
+      <div class="body">
+        <h3>Hook + Rules 基建</h3>
+        <div class="motive">把规则拆成可触发的检查点，从"提示" 升级到 "事件钩子"。</div>
+        <div class="components">
+          <span class="chip">SessionStart hook</span>
+          <span class="chip">Stop hook (response check)</span>
+          <span class="chip">PreToolUse Bash protection</span>
+          <span class="chip">rules/ 拆分 10+ 文件</span>
+          <span class="chip">qa-gate.sh</span>
+          <span class="chip">commit-flag-check</span>
+          <span class="chip">env-change-monitor</span>
+        </div>
+        <div class="lesson"><strong>新失败模式 →</strong>
+          advisory hook 的 <code>94%</code> 天花板 — 即使 hook 在 stop 时注入提醒，模型仍可能凭 distribution prior 重犯。
+          warn-only 的本质是"事后挨骂"，不是"事前阻断"。
+        </div>
+      </div>
+    </div>
+
+    <!-- V2 -->
+    <div class="phase" data-v="V2">
+      <div class="v-tag"><div class="v">V2</div><div class="date">2026-04-15 ~ 04-25</div></div>
+      <div class="body">
+        <h3>Closed-loop + 外审基建</h3>
+        <div class="motive">单模型自审天花板 60-70%，引入独立 critic 闭环。</div>
+        <div class="components">
+          <span class="chip">decision-review.py (GPT 外审)</span>
+          <span class="chip">openai_caller.py 964 LoC</span>
+          <span class="chip">closed_loop_tracker.py 518 LoC</span>
+          <span class="chip">budget_tracker.py 652 LoC</span>
+          <span class="chip">compile-gpt-prompts.py</span>
+          <span class="chip">CID + receipt + disposition schema</span>
+          <span class="chip">Gate Registry v1 (6 gates)</span>
+          <span class="chip">prompt-preprocess.py</span>
+        </div>
+        <div class="lesson"><strong>验证模型 →</strong>
+          完成 = <code>verify</code>（含外审 + finding disposition）≠ <code>implement</code>（代码写完）。
+          引入 <code>record_claim → record_change → attach_review → add_finding → set_disposition → check_verified</code> 6 步契约。
+        </div>
+      </div>
+    </div>
+
+    <!-- V3 -->
+    <div class="phase" data-v="V3">
+      <div class="v-tag"><div class="v">V3</div><div class="date">2026-04-25 ~ 05-08</div></div>
+      <div class="body">
+        <h3>Audit 深挖 + 硬化</h3>
+        <div class="motive">数据驱动的体检：哪些 detect 自己坏了 / 哪些 advisory 必须升 hard-block。</div>
+        <div class="components">
+          <span class="chip">Phase 1-4 harness audit</span>
+          <span class="chip">stop-subtask-diff regex 重写</span>
+          <span class="chip">stop-phase1-tetrad-gate fix</span>
+          <span class="chip">pretool-anchor-gate session+target cache</span>
+          <span class="chip">pre-tool-use-harness-kb hard-block</span>
+          <span class="chip">Stop Rule 5(j) verify-session</span>
+          <span class="chip">stop-override-vs-remove</span>
+          <span class="chip">rotate-logs.py</span>
+          <span class="chip">rule: harness-deploy-velocity</span>
+        </div>
+        <div class="lesson"><strong>反 advisory drift →</strong>
+          "warn-only 28 天观察 → 升 hard-block" 的传统协议被实证浪费时间。
+          Tian reframe：<em>"问题不再犯 &gt; 误报率"</em> — direct hard-block + override + weekly health check 成为新 default。
+        </div>
+      </div>
+    </div>
+
+    <!-- V4 -->
+    <div class="phase" data-v="V4">
+      <div class="v-tag"><div class="v">V4</div><div class="date">2026-05-08 ~ 05-22</div></div>
+      <div class="body">
+        <h3>Dispatcher 雏形 + 横向扩张</h3>
+        <div class="motive">业务事实、视觉、grounding 三条新战线 — 同时控制 hook 总数膨胀。</div>
+        <div class="components">
+          <span class="chip">visual_guard 分发器 (project-scoped)</span>
+          <span class="chip">business-facts 4-hook + lib</span>
+          <span class="chip">WebSearch date anchor 5-layer</span>
+          <span class="chip">stop-stale-prior-claim-gate (5 detectors)</span>
+          <span class="chip">prompt-saas-cutoff-awareness</span>
+          <span class="chip">project governance Phase A (SCHEMA + lint)</span>
+          <span class="chip">full-scan-before-claim rule + hooks</span>
+          <span class="chip">repeat-instruction-detect</span>
+        </div>
+        <div class="lesson"><strong>分布式 prior 失败 →</strong>
+          Tian 反问 "为什么搜 stale year" 暴露 advisory 94% 天花板再次实证。
+          单层 visibility (SessionStart prominent date) 不够 — 必须配 PreToolUse hard-block 作为 deterministic floor。
+          多层防御 ≠ 多层独立 — L1/L2/L5 都受同一 distribution prior 限制，<strong>真正的 floor 是 L3 deterministic gate</strong>。
+        </div>
+      </div>
+    </div>
+
+    <!-- V5 -->
+    <div class="phase" data-v="V5">
+      <div class="v-tag"><div class="v">V5</div><div class="date">2026-05-23 ~ 现在</div></div>
+      <div class="body">
+        <h3>T4 Hard-Gate Broker · 事件驱动收口</h3>
+        <div class="motive">从"个体 hook 各管一段"到"事件→关键事件→critic→signed receipt→broker→blocker" 全链路收口。</div>
+        <div class="components">
+          <span class="chip">Phase A D1-D5 (5 gate ship)</span>
+          <span class="chip">S1 stop-dispatcher (Stop 20 → groups)</span>
+          <span class="chip">S2 userprompt-dispatcher (15 → groups)</span>
+          <span class="chip">S3 pretool-dispatcher (13 → 5 groups)</span>
+          <span class="chip">T4 Phase 1.1 latency wrapper (HookTimer + p95)</span>
+          <span class="chip">T4 Phase 1.2 detector lib (7 CE)</span>
+          <span class="chip">T4 Phase 2 state coordinator (5000 CID stress)</span>
+          <span class="chip">T4 Phase 3 async critic runner</span>
+          <span class="chip">T4 Phase 4.0 broker daemon (GPG + LaunchAgent)</span>
+          <span class="chip">T4 Phase 4.1 hardening (F4-F11 / fcntl singleton)</span>
+        </div>
+        <div class="lesson"><strong>Reframe (D10) →</strong>
+          T4 不是 "deterministic security boundary" (same-UID Bash 物理上可绕)，
+          而是 <strong>"high-friction layer + comprehensive audit"</strong>，目标是阻断 LLM mistake/oversight 不是防 adversarial attack。
+          要真正 adversarial 防御需 root LaunchDaemon + 硬件 token + EndpointSecurity (Path 2，§17 future)。
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 2: 当前架构层次                                     -->
+<!-- ====================================================== -->
+<section class="content" id="layers">
+  <h2><span class="num-prefix">02</span>当前架构 · 事件层 × 职责域</h2>
+  <p class="section-desc">
+    78 hooks 注册到 13 个 Claude Code 事件类型，按职责拆 12 个 domain。
+    <strong>90% warn-only + 10% hard-block</strong> — advisory 是常态，hard-block 是外科手术。
+  </p>
+
+  <h3>按事件类型分布</h3>
+
+  <div class="layer-cake">
+    <div class="layer">
+      <span class="lname">SessionStart</span>
+      <span class="lcount">6 hooks</span>
+      <span class="ldesc">会话起始注入：date 顶置 / KB 索引 / TRACKER queue 合流 / business-facts 路由 / capability probe / 项目锚定</span>
+    </div>
+    <div class="layer">
+      <span class="lname">UserPromptSubmit</span>
+      <span class="lcount">15 hooks</span>
+      <span class="ldesc">每 turn 前置：scope-gate / alignment-gate / agenda classifier / SaaS cutoff awareness / generalization detect / repeat instruction / memory verify gate / userprompt-dispatcher (聚合)</span>
+    </div>
+    <div class="layer">
+      <span class="lname">PreToolUse</span>
+      <span class="lcount">22 hooks</span>
+      <span class="ldesc">工具调用拦截：pretool-dispatcher (13→5 groups: brand/harness/discipline/resource/agent) + agenda-gate + db-sop (hard-block) + commit-quality / migration-plan-gate / config-protection / cd-drift-check / websearch-date-anchor (hard-block)</span>
+    </div>
+    <div class="layer">
+      <span class="lname">PostToolUse</span>
+      <span class="lcount">5 hooks</span>
+      <span class="ldesc">事后取信号：telemetry / business-facts capture / brand-redundancy lint / lesson-sedimentation / auto-recompile-gpt-prompts</span>
+    </div>
+    <div class="layer">
+      <span class="lname">Stop</span>
+      <span class="lcount">22 hooks</span>
+      <span class="ldesc">回复后审计：stop-dispatcher (聚合) + closed-loop-gate (Rule 5(j)) + stale-prior-claim-gate (5 detectors) + override-vs-remove + subtask-diff + rule-violations / fullscan-claim-check / batch-output-read-verify-gate / gpt-code-review (critic)</span>
+    </div>
+    <div class="layer">
+      <span class="lname">SubagentStart / Stop</span>
+      <span class="lcount">2 hooks</span>
+      <span class="ldesc">子代理出入：provenance envelope + subagent-rules check (返回报告满足合同)</span>
+    </div>
+    <div class="layer">
+      <span class="lname">PreCompact / PostCompact</span>
+      <span class="lcount">2 hooks</span>
+      <span class="ldesc">上下文压缩：注入 "存活规则" / 触发 PostCompact recovery (重读 TaskList + 关键文件)</span>
+    </div>
+    <div class="layer">
+      <span class="lname">SessionEnd / FileChanged / PostToolUseFailure</span>
+      <span class="lcount">3 hooks</span>
+      <span class="ldesc">收尾与边缘：会话结束 audit / .env 改动监控 / 工具失败信号采集</span>
+    </div>
+  </div>
+
+  <h3>按职责域分布 (Domain)</h3>
+
+  <div class="domain-grid">
+    <div class="domain" data-d="governance"><div class="dn">governance · 22</div><div class="dc">harness 自治、build pipeline、ledger 治理、跨 hook 协调</div></div>
+    <div class="domain" data-d="rule_enforce"><div class="dn">rule_enforce · 13</div><div class="dc">规则违反检测：agenda / scope / format / 重复指令 / 规则 violation</div></div>
+    <div class="domain" data-d="security"><div class="dn">security · 9</div><div class="dc">敏感操作拦截：DB SoP / commit quality / migration plan / config protection / Bash 防护</div></div>
+    <div class="domain" data-d="kb"><div class="dn">kb · 9</div><div class="dc">知识库纪律：KB 前置查询 / KB violation / lesson sedimentation / harness-kb gate</div></div>
+    <div class="domain" data-d="telemetry"><div class="dn">telemetry · 6</div><div class="dc">遥测采集：hook telemetry / latency timer / depth ledger / env change</div></div>
+    <div class="domain" data-d="business"><div class="dn">business · 4</div><div class="dc">业务事实路由：客户 / 供应商 / 竞品 entity → KB 不 memory</div></div>
+    <div class="domain" data-d="grounding"><div class="dn">grounding · 4</div><div class="dc">外部事实接地：SaaS docs fetch / WebSearch date anchor / stale prior claim</div></div>
+    <div class="domain" data-d="brand"><div class="dn">brand · 3</div><div class="dc">brand-kit deliverable hygiene：passive voice / FTC compliance / forbidden memory terms</div></div>
+    <div class="domain" data-d="scope"><div class="dn">scope · 3</div><div class="dc">scope 越界检测：scope-gate / alignment / dim-matrix batch</div></div>
+    <div class="domain" data-d="critic"><div class="dn">critic · 2</div><div class="dc">外审 critic：GPT code review / 外援 hard-gate</div></div>
+    <div class="domain" data-d="format"><div class="dn">format · 2</div><div class="dc">输出格式契约：上下文状态行 regex / 角色路由</div></div>
+    <div class="domain" data-d="test"><div class="dn">test · 1</div><div class="dc">测试运行器 + ledger</div></div>
+  </div>
+
+  <h3>Enforcement 分布</h3>
+
+  <table class="tbl">
+    <thead><tr><th>模式</th><th>数量</th><th>占比</th><th>用法</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge b-warn">warn-only</span></td><td>70</td><td>89.7%</td><td>事后 ledger 记录，下次 prompt 注入提醒，advisory 主线</td></tr>
+      <tr><td><span class="badge b-hard">hard-block</span></td><td>7</td><td>9.0%</td><td>外科手术：DB SoP / harness-kb / WebSearch date / agenda 高危路径 / migration plan / commit quality / database write</td></tr>
+      <tr><td><span class="badge b-dry">dry-run</span></td><td>1</td><td>1.3%</td><td>shadow 模式：dispatcher cutover 前的 diff 收集</td></tr>
+    </tbody>
+  </table>
+
+  <blockquote>
+    <strong>设计原则</strong>：advisory 是默认 — 让 detect 自由迭代不需 Tian ack 单条；hard-block 是承诺 — 一旦升级必须有 override + ledger + weekly audit。
+    7 个 hard-block 都对应过真实业务损失（DB 误写 / migration 漏改维度 / stale year 搜索）。
+  </blockquote>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 3: Dispatcher 演进                                  -->
+<!-- ====================================================== -->
+<section class="content narrow" id="dispatcher">
+  <h2><span class="num-prefix">03</span>Dispatcher 收口 · 一个事件一个入口</h2>
+  <p class="section-desc">
+    PreToolUse 13 hook → 5 group 模块 · UserPromptSubmit 多 hook → groups · Stop 多 hook → groups。
+    Shadow mode → cutover analyzer → enforce 三步走，diff &lt; 5% 才切。
+  </p>
+
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+flowchart LR
+  E[PreToolUse Event] --> D{pretool-dispatcher.py}
+  D -->|Write/Edit/MultiEdit| B[brand group]
+  D -->|Write/Edit| H[harness group]
+  D -->|Write/Edit/Bash| DI[discipline group]
+  D -->|Bash/WebSearch| R[resource group]
+  D -->|Agent| A[agent group]
+
+  B --> B1[tracker passive voice]
+  B --> B2[FTC compliance claim]
+  B --> B3[brand memory terms]
+
+  H --> H1[KB-first check]
+  H --> H2[hook deploy SOP]
+  H --> H3[anchor ritual]
+
+  DI --> D1[tool-fit eval schema]
+  DI --> D2[dimension matrix]
+  DI --> D3[KB violation keyword]
+
+  R --> R1[batch resource reuse]
+  R --> R2[SaaS docs fetch]
+  R --> R3[WebSearch year anchor]
+
+  A --> A1[sub-agent tool contract]
+
+  D --> L[Aggregate]
+  L --> SH[Shadow ledger v2 / verdict schema]
+  L --> EN{Enforce mode?}
+  EN -->|any block| X[exit 2 + stderr]
+  EN -->|any inject| I[additionalContext JSON]
+  EN -->|otherwise| OK[exit 0]
+
+  style D fill:#1a2138,stroke:#6366f1,stroke-width:2px,color:#e5e7eb
+  style L fill:#1a2138,stroke:#6366f1,color:#e5e7eb
+  style SH fill:#131829,stroke:#94a3b8,color:#94a3b8
+  style EN fill:#1a2138,stroke:#f59e0b,color:#e5e7eb
+  style X fill:#1a2138,stroke:#ef4444,color:#fca5a5
+  style OK fill:#1a2138,stroke:#10b981,color:#6ee7b7
+    </pre>
+  </div>
+
+  <h3>为什么收口 — 三个动因</h3>
+  <ul>
+    <li><strong>性能</strong>：13 个 subprocess fork → 1 个 (Claude Code 每 PreToolUse 都触发，13× 启动开销可感)</li>
+    <li><strong>可审计</strong>：5 group 的 decision 聚合到一份 ledger，diff 一目了然</li>
+    <li><strong>原子升级</strong>：换一个 detector 不影响其他，shadow mode 跑 5 天数据再 cutover</li>
+  </ul>
+
+  <h3>Shadow → Cutover 协议</h3>
+  <ol>
+    <li><strong>Ship dispatcher</strong>，settings.json 注册新 entry，<em>保留旧 13 hooks 并行跑</em></li>
+    <li>Dispatcher 落 <code>shadow-events.jsonl</code>，schema v2 (含 would_emit / would_block 字段)</li>
+    <li>5 天后跑 <code>dispatcher-cutover-analyzer.py</code>：per-group activation ≥ 30 + error_rate &lt; 0.5% + BLOCK FN = 0 (compliance gate 零容忍) + inject FN ≤ 5%</li>
+    <li>analyzer exit 0 = GO → 删 settings.json 旧 13 entries + archive 旧 hook 文件 + 切 enforce mode</li>
+  </ol>
+
+  <blockquote>
+    <strong>2026-05-24 实战陷阱</strong>：v1 ledger 不记 <code>would_emit_*</code> 字段 → cutover metric "diff rate &lt; 5%" 数学上无意义（always-pass shadow 对比 old-real-emit）。
+    Fix：schema 改 v2 + 直接对比 per-group decision 而非 final emit。KB 沉淀
+    <code>shadow-mode-dispatcher-cutover-metric-trap.md</code>。
+  </blockquote>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 4: T4 BROKER                                       -->
+<!-- ====================================================== -->
+<section class="content" id="t4">
+  <h2><span class="num-prefix">04</span>T4 Hard-Gate Broker · Phase 1 → 4</h2>
+  <p class="section-desc">
+    最复杂的 V5 组件：让 critical event (closure claim / hook change / harness mod 等 CE-1..7) 必须先有 critic 的 <strong>signed receipt</strong> 才能放行。
+    User-space daemon + GPG sign + Unix socket IPC。
+  </p>
+
+  <h3>架构图</h3>
+
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+flowchart TD
+  subgraph workers["Phase 3 Async Critic Workers"]
+    W1[run_critic_async]
+    W1 --> W2[detector lib · CE-1..7]
+    W2 --> W3[critic verdict + task_id]
+  end
+
+  subgraph client["Phase 4.0 Broker Client"]
+    BC[t4_broker_client.py]
+  end
+  W3 --> BC
+
+  subgraph broker["Phase 4.0 Broker Daemon (LaunchAgent)"]
+    BD[t4_broker.py]
+    GPG[GPG sign-only key]
+    PR[pending-reviews.jsonl]
+    AU[audit log JSONL]
+  end
+  BC -->|JSON-RPC over Unix socket| BD
+  BD --> |"verify PID ∈ critic-registry"| BD
+  BD --> |"verify task_id ∈ pending-reviews"| PR
+  BD --> |"rate limit 60/min/PID"| BD
+  BD --> |"sign envelope"| GPG
+  BD --> AU
+
+  subgraph coord["Phase 2 State Coordinator"]
+    SC[t4_state_coordinator.py]
+    ST[state-CID.json + envelope + signature]
+  end
+  BD -->|signed receipt envelope| SC
+  SC --> ST
+
+  subgraph blocker["Phase 4.x PreToolUse Blocker (future)"]
+    BL[evaluate_gate]
+    BL -->|verify signature vs installed pubkey| V{ok?}
+    V -->|pass| PASS[allow tool]
+    V -->|fail| BLOCK[exit 2 BLOCK]
+  end
+  ST --> BL
+
+  subgraph override["Out-of-band Override"]
+    OV[claude-override-broker CLI]
+    OV -->|"GPG sign override.yaml.sig"| ST
+  end
+
+  style W1 fill:#1a2138,stroke:#14b8a6,color:#5eead4
+  style BC fill:#1a2138,stroke:#6366f1,color:#a5b4fc
+  style BD fill:#1a2138,stroke:#f59e0b,stroke-width:3px,color:#fcd34d
+  style GPG fill:#0a0e1a,stroke:#f59e0b,color:#fcd34d
+  style SC fill:#1a2138,stroke:#6366f1,color:#a5b4fc
+  style BL fill:#1a2138,stroke:#ef4444,color:#fca5a5
+  style PASS fill:#0a0e1a,stroke:#10b981,color:#6ee7b7
+  style BLOCK fill:#0a0e1a,stroke:#ef4444,color:#fca5a5
+  style OV fill:#131829,stroke:#94a3b8,color:#94a3b8
+    </pre>
+  </div>
+
+  <h3>4 Phase 累积里程碑</h3>
+
+  <table class="tbl">
+    <thead><tr><th>Phase</th><th>交付</th><th>测试</th><th>关键设计点</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="mono">1.1</td>
+        <td>HookTimer latency wrapper + weekly-audit p95 consumer + 500ms 红线</td>
+        <td>7/7 smoke + 5/5 unit + E2E</td>
+        <td>p95 latency 数据驱动 detect 选优 / 红线 SLO 触发降级</td>
+      </tr>
+      <tr>
+        <td class="mono">1.2</td>
+        <td>7 detector module (CE-1..7) + dispatcher + 12 段 spec</td>
+        <td>57/57 smoke + E2E (52 detector + 5 dispatcher)</td>
+        <td>CE = Critical Event 类型枚举 / detector 库可独立扩展</td>
+      </tr>
+      <tr>
+        <td class="mono">1.2c.x</td>
+        <td>5 P0 fix (settings wire / anchored matcher / SIGALRM doc / true threat metric / shpat revert) + redaction E2E + threat model</td>
+        <td>423/423 (96 detector + 11 dispatcher E2E + 96 corpus + 200 fcntl stress + 20 redaction)</td>
+        <td>P1 blockers 解锁 dry-run</td>
+      </tr>
+      <tr>
+        <td class="mono">1.3</td>
+        <td>4-week dry-run (kickoff 2026-05-24, check #1 2026-06-01)</td>
+        <td>passive collection</td>
+        <td>observation, 不是 active enforcement</td>
+      </tr>
+      <tr>
+        <td class="mono">2</td>
+        <td>State coordinator (CID lifecycle / fcntl atomic / O(N) lookup)</td>
+        <td>44 unit + 9 smoke + 7/7 stress (5000 distinct CIDs / 20 winners / 0 race)</td>
+        <td>idempotency race fix / ack_composed_barto plan</td>
+      </tr>
+      <tr>
+        <td class="mono">3</td>
+        <td>Async critic runner (subprocess + sentinel JSON verdict)</td>
+        <td>smoke 16/16 + unit 47/47 (含 P0 fix 验证)</td>
+        <td>process group kill / stderr task_id capture / sentinel JSON</td>
+      </tr>
+      <tr>
+        <td class="mono">4.0</td>
+        <td>Broker bootstrap (7 files) — daemon + client + GPG + LaunchAgent + override CLI</td>
+        <td>21 pure + 5 live-broker integration</td>
+        <td>Tian-interactive setup (5min GPG passphrase)</td>
+      </tr>
+      <tr>
+        <td class="mono">4.1</td>
+        <td>F4 fcntl singleton lock + F5 future.add_done_callback + F6 BOOT_GPG_META + F7 stress test gating</td>
+        <td>80/80 (+21 vs Phase 4.0)</td>
+        <td>O_CLOEXEC + O_NOFOLLOW + inode dev+ino verify</td>
+      </tr>
+      <tr>
+        <td class="mono">4.1 follow-up</td>
+        <td>F4-F4 centralized cleanup helper (9 sites + 9 tests) + 段 3 SIGKILL scenario + F7-F11 weekly test runner (launchd Mon 03:30)</td>
+        <td>89/89 — live broker PID restart + SIGKILL → KeepAlive auto-restart 验证</td>
+        <td>SIGKILL safe lock + STALE socket path 完整 audit trail</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>关键 reframe (D10)</h3>
+
+  <blockquote>
+    "T4 是 <strong>high-friction prevention + comprehensive audit</strong> for LLM mistake/oversight，
+    <strong>不是</strong> deterministic security boundary。"
+    <cite>— spec v4 §0 D10, Tian ack 2026-05-25</cite>
+  </blockquote>
+
+  <p>3 轮 critic 收敛 (challenger B- → GPT B → GPT D)，每轮都暴露 spec 更深一层假设：</p>
+
+  <ol>
+    <li><strong>Round 1 (challenger B-)</strong>：4 P0 — 8D enumeration / evaluate_gate PENDING ambiguity / content_hash contract / PostToolUse 兜底 framing。v2 全 fix。</li>
+    <li><strong>Round 2 (GPT B)</strong>：3 新 P0 strictly dominate — same-UID receipt 完整性 / CE pre-coverage matrix / event_fingerprint 不只 path-set。v3 加 §5.5 trusted broker + §3.6 256-bit fingerprint + §4.5 CE matrix。</li>
+    <li><strong>Round 3 (GPT D)</strong>：2 新 P0 — LaunchAgent same UID == Tian UID 不是 trust boundary / Tian-interactive GPG passphrase 同 session 不可信。<strong>v4 全面 reframe</strong>：从 "deterministic hard-gate" 改 "high-friction + audit"，Path 2 root-daemon 入 §17 future。</li>
+  </ol>
+
+  <p>Path 2 (未来 — 真 adversarial 防御) 需要：</p>
+  <ul>
+    <li>Root LaunchDaemon + 专用 <code>_t4broker</code> UID</li>
+    <li>硬件 token (YubiKey / Secure Enclave) 持密钥</li>
+    <li>EndpointSecurity framework pre-block (需 Apple Developer Program)</li>
+    <li>Clean-room GPG bootstrap + code-signed broker binary</li>
+    <li>~2 周 Tian 投入 + $150-300 硬件 + $99/年 Apple Dev</li>
+  </ul>
+
+  <p>触发 Path 2 投资的条件 (per spec §17)：</p>
+  <ol>
+    <li>Phase 4.10 activate 后 audit log 显示 bypass attempts ≥ 5%/月</li>
+    <li>T4 扩到 multi-user / production / customer-facing</li>
+    <li>Tian 决定客户资金类操作需 OS 级 enforcement</li>
+  </ol>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 5: 防御模式                                         -->
+<!-- ====================================================== -->
+<section class="content" id="defense">
+  <h2><span class="num-prefix">05</span>防御模式目录 · 一个失败如何变成多层防御</h2>
+  <p class="section-desc">
+    每个模式都有具体 failure narrative + 多层 stack + floor 标识。
+    <strong>"多层 ≠ 多独立"</strong> — 同一 distribution prior 的多个提示层失败模式高度相关，真正的 floor 是 deterministic gate。
+  </p>
+
+  <!-- Pattern 1 -->
+  <div class="pattern">
+    <div class="ptitle">
+      <h3>Pattern 1 · Stale Year WebSearch Query</h3>
+      <span class="tag">6 layers · floor at L3</span>
+    </div>
+    <p class="pdesc">
+      2026-05-21 Tian 让查 Zakeke + Shopify 集成，Claude 默认 query <code>"... tutorial 2025"</code> — 即使 system context 顶置 <code>currentDate: 2026-05-21</code>。
+      Distribution prior &gt; read instruction：训练 corpus 最近完整年份 token freq 远高于 2026。
+      Shopify saga 8 轮失败已实证同根因。
+    </p>
+    <div class="layers-mini">
+      <div class="lm"><span class="ll">L1</span><span class="ld">SessionStart prominent date 块 (session-start.sh 顶置)</span><span class="lt">visibility</span></div>
+      <div class="lm"><span class="ll">L2</span><span class="ld">UserPromptSubmit reminder (prompt-saas-cutoff-awareness.py)</span><span class="lt">prior reset</span></div>
+      <div class="lm floor"><span class="ll">L3</span><span class="ld">PreToolUse hard-block (pretool-websearch-date-anchor.py) — dev/SaaS query 含 stale year 不含 current year → BLOCK</span><span class="lt">FLOOR</span></div>
+      <div class="lm"><span class="ll">L4</span><span class="ld">Stop hook 审计 (stop-stale-prior-claim-gate.py 5 detectors)</span><span class="lt">final claim gate</span></div>
+      <div class="lm"><span class="ll">L5</span><span class="ld">grounding.md 例 17 few-shot 实证</span><span class="lt">distribution shift</span></div>
+      <div class="lm"><span class="ll">L6</span><span class="ld">weekly-fullscan-audit.py LEDGERS 注册 — OVERRIDE 比例 &gt; 30%/周 触发 tune</span><span class="lt">health monitor</span></div>
+    </div>
+    <p><strong>关键洞察</strong>：L1/L2/L5 都受同一 distribution prior 限制，advisory 94% 天花板已实证。<strong>必须有 L3 deterministic gate 才有真 floor</strong>。L4 太晚（搜索质量已坏），L6 是治理不是防线。</p>
+  </div>
+
+  <!-- Pattern 2 -->
+  <div class="pattern">
+    <div class="ptitle">
+      <h3>Pattern 2 · Migration 漏改维度 (Auth Migration P2)</h3>
+      <span class="tag">4 layers</span>
+    </div>
+    <p class="pdesc">
+      2026-04-18 brand-kit auth-migration P2：plan Architecture 段写 <code>resolveUser() + adminDb</code>，Pattern 段只示范 <code>resolveUser()</code>。
+      执行 agent 按 Pattern 走漏了 adminDb 维度。build/tsc/test/diff review 全过（漏改 = 没 diff = 全 blind）。4 月 18 日 043 RLS hardening 引爆，紧急 PR #17 修复。
+    </p>
+    <div class="layers-mini">
+      <div class="lm"><span class="ll">L1</span><span class="ld">Plan 必含"改动矩阵" — 文件 × 维度 checkbox 表，扁平清单不合格</span><span class="lt">design</span></div>
+      <div class="lm floor"><span class="ll">L2</span><span class="ld">PreToolUse migration-plan-gate.sh — git commit 时 5 条 AND (plan 存在 + migration keyword + 未打勾 blocking + E2E 关键词 + diff 碰 plan 文件) → block</span><span class="lt">FLOOR</span></div>
+      <div class="lm"><span class="ll">L3</span><span class="ld">Stop hook Rule 5(f) LLM 兜底 — diff 碰 plan 文件 + 未打勾 blocking → not ok</span><span class="lt">backup</span></div>
+      <div class="lm"><span class="ll">L4</span><span class="ld">/migration-verify command — LLM 解析 plan 期望维度 vs grep 实际 diff → 缺口报告</span><span class="lt">tool</span></div>
+    </div>
+    <p>Override 双路径：<code>MIGRATION_OVERRIDE=1</code> env / commit msg 含 <code>[migration-override]</code>。Override 必须 PR 描述显式说明遗留 blocking 项处理计划。</p>
+  </div>
+
+  <!-- Pattern 3 -->
+  <div class="pattern">
+    <div class="ptitle">
+      <h3>Pattern 3 · Closed-loop Claim (DoD 漂移元缺陷)</h3>
+      <span class="tag">3 layers + 4 维 checklist</span>
+    </div>
+    <p class="pdesc">
+      2026-04-15 → 2026-04-29 反复发生："本地命令 exit 0" 当 "任务完成"。
+      DoD (Definition of Done) 应绑世界状态不绑自己 action exit code。
+      闭环宣告必须经独立 critic — 自查天花板 60-70%（KB 量化），剩余 30-40% 必须独立视角。
+    </p>
+    <div class="layers-mini">
+      <div class="lm"><span class="ll">L1</span><span class="ld">alignment-gate (UserPromptSubmit) — 多任务 prompt 必须有优先级声明</span><span class="lt">advisory</span></div>
+      <div class="lm"><span class="ll">L2</span><span class="ld">closed_loop_tracker.py 6 步契约 — record_claim → record_change → attach_review → add_finding → set_disposition → check_verified</span><span class="lt">schema</span></div>
+      <div class="lm floor"><span class="ll">L3</span><span class="ld">Stop hook Rule 5(j) verify-session — closure claim 必经外审 critic + finding disposition + time+scope 绑定 → exit 1 blocked</span><span class="lt">FLOOR</span></div>
+    </div>
+    <p><strong>4 维 checklist</strong> (任一缺失 = not closed-loop)：</p>
+    <ul>
+      <li><strong>Schema 对照</strong> — 所有 JSON/file 对照 SCHEMA.md/spec，enum 值合法</li>
+      <li><strong>全 caller 扫描</strong> — grep import + call sites 全更新/兼容</li>
+      <li><strong>End-to-end 真实路径</strong> — 真 subprocess/API/hook 跑过，不接受 mock-only</li>
+      <li><strong>历史回查</strong> — audit log / state file / commit history 有 trace 证明真发生</li>
+    </ul>
+    <p><strong>措辞分级</strong> (GPT 外审 P0 #9 修正)：<code>implemented</code> (代码写完) ≠ <code>verified</code> (外审过) ≠ <code>closed-loop</code> (verified + Tian ack)。部署 gate / hook 后默认只能说 implemented。</p>
+  </div>
+
+  <!-- Pattern 4 -->
+  <div class="pattern">
+    <div class="ptitle">
+      <h3>Pattern 4 · Full Scan Before Claim (Yupoo 灾难)</h3>
+      <span class="tag">4 hard rule (Phase 2)</span>
+    </div>
+    <p class="pdesc">
+      2026-05-08 pod-service-self 1208 张 yupoo SKU 图：sample 18-20 张就报 "0 张干净模特图"，Tian 4+ 次纠正。
+      根因 token 节约心态压过 correctness + sub-agent hallucinate 6/11 张 description (未 ls + Read 物理验证)。
+      <strong>自己 ingest 的 KB 在 24h 内立即违反</strong>。
+    </p>
+    <div class="layers-mini">
+      <div class="lm"><span class="ll">R1</span><span class="ld">Stop hook 检测全集断言措辞 + Read count vs glob 总数比对，违反 BLOCK</span><span class="lt">enforce</span></div>
+      <div class="lm"><span class="ll">R2</span><span class="ld">UserPromptSubmit 重复指令检测 (关键词 ≥3 次触发 step back 提醒)</span><span class="lt">enforce</span></div>
+      <div class="lm"><span class="ll">R3</span><span class="ld">PreToolUse KB ingest 后 24h 违反检测 (Haiku 分类 action vs KB 禁止段)</span><span class="lt">enforce</span></div>
+      <div class="lm floor"><span class="ll">R4</span><span class="ld">PreToolUse NB/PIL/cv2 + assets/source 路径检测 — 强制先证 100% 已扫现成资源</span><span class="lt">FLOOR</span></div>
+    </div>
+    <p><strong>Fallback strategy</strong> (资源 ≥ context 容量时)：L0 metadata 100% (ls/find/hash) + L1 缩略图 montage 100% (Pillow grid 10-100 图/single LLM read) + L2 候选 5-10 项 small subset full read。必须显式声明 partial scope。</p>
+  </div>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 6: 原则 + 失败模式                                  -->
+<!-- ====================================================== -->
+<section class="content" id="principles">
+  <h2><span class="num-prefix">06</span>架构原则 · 8 周沉淀</h2>
+  <p class="section-desc">
+    这些不是先验设计原则，是从一次次"为什么这条 rule 又被忽略了" 反推出来的。每条都对应至少一个 KB wiki 实证。
+  </p>
+
+  <div class="principles">
+
+    <div class="principle">
+      <span class="pn">01</span>
+      <h4>Deterministic &gt; LLM</h4>
+      <p>能用代码做的判断不让 LLM 做。Hook 性能 + 确定性 100% + 可 unit test。LLM 留给语义/分类/生成。<code>rules/deterministic-first.md</code></p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">02</span>
+      <h4>Hard-block &gt; Advisory (94% 天花板)</h4>
+      <p>advisory hook 在高置信错误上有 ~94% 失败率天花板。recurring 问题必须 direct hard-block + override + weekly audit，不走 28 天观察期。Tian 2026-05-08 reframe。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">03</span>
+      <h4>Closed-loop with External Critic</h4>
+      <p>自查天花板 60-70%。任何 closure claim 必经 challenger / GPT 外审 + finding disposition + time-scope 绑定。<code>closed_loop_tracker.py</code> 6 步契约。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">04</span>
+      <h4>Mechanism-first, No Sycophancy</h4>
+      <p>Tian 挑战 / 纠正 / 反问时永远先 ≥3 段机制分析 (distribution prior / RLHF / pattern matching) 再给 fix。禁 "你对 / 抱歉" 开头。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">05</span>
+      <h4>DoD = World State ≠ Exit Code</h4>
+      <p>"我这侧命令 exit 0" ≠ "任务完成"。git push → CI 全绿 / vercel → READY / supabase → empty diff。本地 build 全绿只是 developer-local 就绪。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">06</span>
+      <h4>Schema Validation Everywhere</h4>
+      <p>任何被下游消费的输出必须有显式 schema (jsonschema / pydantic / regex)。malformed → reject + retry，不 silent default。<code>rules/output-schema-validation.md</code></p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">07</span>
+      <h4>Budget Transparency (3 层)</h4>
+      <p>per-step / per-pipeline / per-day 三层 token 预算。超限立即停 + 报告 + 不静默继续。<code>budget_tracker.py</code> reservation pattern + audit log。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">08</span>
+      <h4>Full Scan Before Claim</h4>
+      <p>声明 "X 都没有 / 0 张 Y" 类全集结论前必须 read 全集 + grep 验证。token 不够明说让 Tian 决定，禁止静默缩 sample。Yupoo 灾难驱动。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">09</span>
+      <h4>Project Anchor Ritual</h4>
+      <p>跨项目 / 客户 / phase 切换第一动作必须 re-anchor 到真相源 (项目 CLAUDE.md 当前 phase 段 + 第一性输入源)，不从 compressed memory 拉 default。</p>
+    </div>
+
+    <div class="principle">
+      <span class="pn">10</span>
+      <h4>KB Sediment for Cross-session Learning</h4>
+      <p>本会话学到的非显然结论必须 ingest 到 KB wiki + frontmatter 含 source/confidence/last_verified — 否则 session 结束就蒸发。200+ wikis 累积。</p>
+    </div>
+
+  </div>
+
+  <h3>3 个元缺陷 (Meta Failure Modes)</h3>
+
+  <div class="meta-fail">
+    <div class="mf">
+      <div class="mft">M1 · DoD 漂移元缺陷 (2026-04-15 诞生)</div>
+      <div class="mfd">
+        Self-model 把 "完成" 绑在 own action exit code 而非 world state。
+        修完本轮 DoD 漂移的同一会话忘了 "GPT 联动 harness 同步" 就是换变体实证。
+        <strong>修复机制</strong>：每次声明完成前必问 "我画的边界是否比现实世界的边界更小"。
+      </div>
+    </div>
+    <div class="mf">
+      <div class="mft">M2 · 失败模式换变体重犯</div>
+      <div class="mfd">
+        修完一个具体 case 后，同一根因换变体在下一个会话复发。fix 不带 mechanism 理解 → 同模式必然重犯。
+        <strong>修复机制</strong>：fix 时强制做 ≥3 段机制分析 + KB sediment (不是 action item)，让下次 distribution shift。
+      </div>
+    </div>
+    <div class="mf">
+      <div class="mft">M3 · Distribution Prior &gt; Read Instruction (94% ceiling)</div>
+      <div class="mfd">
+        训练 distribution prior 在 query 生成 / 选项默认 / autocomplete 时压过 prompt 里写的 rule。
+        即使 SessionStart 顶置 + UserPromptSubmit reminder + grounding 例 17 同时部署，仍可能违反。
+        <strong>修复机制</strong>：advisory 永远只是降低触发率 — 真正的 floor 必须是 deterministic hard-block (L3 gate)。
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 7: 数字看板                                         -->
+<!-- ====================================================== -->
+<section class="content narrow">
+  <h2><span class="num-prefix">07</span>组件清单 · 一份完整盘点</h2>
+
+  <table class="tbl">
+    <thead><tr><th>类别</th><th>数量</th><th>位置</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>Hooks (manifest)</td><td class="mono">78 (77 active)</td><td class="mono">~/.claude/hooks/</td><td>78 注册 + ~10 archive/utility</td></tr>
+      <tr><td>Hook event 类型</td><td class="mono">13</td><td>—</td><td>SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Subagent× / Compact× / SessionEnd / FileChanged / Notification</td></tr>
+      <tr><td>Hook lib 模块</td><td class="mono">~20</td><td class="mono">~/.claude/hooks/lib/</td><td>含 4 dispatcher (pretool / stop / userprompt / visual_guard) + 7 t4_* + 4 业务事实</td></tr>
+      <tr><td>Rules</td><td class="mono">20</td><td class="mono">~/.claude/rules/</td><td>每条 ≤ 3 行 in CLAUDE.md，详解在 rules/*.md</td></tr>
+      <tr><td>Sub-agents</td><td class="mono">4</td><td class="mono">~/.claude/agents/</td><td>researcher / diagnostician / qa / memory-manager</td></tr>
+      <tr><td>Gate Registry</td><td class="mono">6</td><td class="mono">~/.claude/policies/gate-registry.md</td><td>alignment → agenda → scope → learn-x → harness-kb → closed-loop</td></tr>
+      <tr><td>Policies</td><td class="mono">5</td><td class="mono">~/.claude/policies/</td><td>含 agenda-trigger-contract.yaml / manifest.schema.yaml / rules-enforcement-registry</td></tr>
+      <tr><td>Plans (active)</td><td class="mono">17+</td><td class="mono">~/.claude/plans/</td><td>T2/T4/T5 各阶段 mini-plan + plan-mode</td></tr>
+      <tr><td>Specs</td><td class="mono">18</td><td class="mono">~/.claude/hooks/specs/</td><td>每个新 hook 必带 spec (purpose / arch / test / critic / acceptance / override / ledger)</td></tr>
+      <tr><td>Core lib</td><td class="mono">~2300 LoC</td><td class="mono">~/.claude/</td><td>openai_caller 964 + budget_tracker 652 + closed_loop_tracker 518 + decision-review 145</td></tr>
+      <tr><td>KB wikis</td><td class="mono">200+</td><td class="mono">小天知识库/</td><td>13-经验知识库 / 14-技术方案 / 15-工具与环境 / ... 9 大类</td></tr>
+      <tr><td>T4 broker</td><td class="mono">1 live daemon</td><td class="mono">LaunchAgent</td><td>PID restart 验证 + 段 3 SIGKILL → KeepAlive auto-restart pass</td></tr>
+      <tr><td>T4 tests</td><td class="mono">89/89</td><td>—</td><td>Phase 4.1 follow-up baseline (含 F4-F4 9 test + 3 pre-existing fix)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>核心 lib 调用关系</h3>
+
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+flowchart LR
+  CR[CLAUDE.md rules/] --> H{Hooks}
+  H -->|warn-only 70| Adv[Advisory ledger]
+  H -->|hard-block 7| Block[Tool exit 2]
+  H -->|external review| DR[decision-review.py]
+  DR --> OC[openai_caller.py 964 LoC]
+  OC --> BT[budget_tracker.py 652 LoC]
+  OC --> CL[closed_loop_tracker.py 518 LoC]
+  CL -->|6 步契约| State[state-CID.json]
+  State --> CV{check-verified}
+  CV -->|ok| Verified[status=verified]
+  CV -->|blocked| BL[exit 1 reasons]
+  H -->|Stop Rule 5j| CV
+  Adv -.->|weekly audit| WA[weekly-fullscan-audit.py]
+  WA --> Tune[detect tune / hard-block 升级]
+
+  style CR fill:#1a2138,stroke:#94a3b8,color:#e5e7eb
+  style H fill:#1a2138,stroke:#6366f1,stroke-width:2px,color:#a5b4fc
+  style Adv fill:#131829,stroke:#f59e0b,color:#fcd34d
+  style Block fill:#131829,stroke:#ef4444,color:#fca5a5
+  style DR fill:#1a2138,stroke:#14b8a6,color:#5eead4
+  style CL fill:#1a2138,stroke:#10b981,color:#6ee7b7
+  style Verified fill:#0a0e1a,stroke:#10b981,color:#6ee7b7
+  style BL fill:#0a0e1a,stroke:#ef4444,color:#fca5a5
+    </pre>
+  </div>
+
+</section>
+
+<!-- ====================================================== -->
+<!-- SECTION 8: 路线图                                           -->
+<!-- ====================================================== -->
+<section class="content narrow">
+  <h2><span class="num-prefix">08</span>下一步 · V6 候选</h2>
+  <p class="section-desc">
+    当前 V5 已 ship 78 hooks + T4 Phase 4.1 follow-up VERIFIED。V6 候选方向（按依赖排序）。
+  </p>
+
+  <ol>
+    <li><strong>T4 Phase 4.2+ wire-up</strong> — validated recursion guard / evaluate_gate API / event_fingerprint canonical / Phase 2 P0 5 项关闭</li>
+    <li><strong>T4 Phase 1.3 dry-run check #1</strong> — 2026-06-01，4 周观察 detector 准确率</li>
+    <li><strong>T2 dispatcher cutover (S3 pretool)</strong> — 5-day shadow 数据后跑 cutover-analyzer，删旧 13 entries</li>
+    <li><strong>T5 RAG Phase 0 Day 2-7</strong> — FTS5 先行 + router 分离 + multi-label routing (blocked on auto-review hard-gate)</li>
+    <li><strong>Phase A "大砍刀"</strong> — 60+ → &lt;40 hooks 横扫：触发 &lt; 5/月 + true-positive &lt; 50% / Stop 链超 5 同 domain 仅保 canonical / 重复防御合并 (blocked on Tian per-hook 1-by-1 ack)</li>
+    <li><strong>KB→hook Pilot #2</strong> — audit-claim SubagentStop (Pilot #1 memory-verify 已 ship 2026-05-24, 24h dogfood 待 ack)</li>
+    <li><strong>Path 2 future (§17)</strong> — 若 Phase 4.10 bypass ≥ 5%/月 触发 root LaunchDaemon + 硬件 token + EndpointSecurity 升级</li>
+  </ol>
+
+</section>
+
+<footer>
+  <div>Claude Code Harness · 架构演进图谱 V0 → V5</div>
+  <div>本页所有数据来源真实项目状态，2026-05-26 snapshot</div>
+  <div class="links">
+    <a href="#timeline">时间线</a>
+    <a href="#layers">当前架构</a>
+    <a href="#t4">T4 Broker</a>
+    <a href="#defense">防御分层</a>
+    <a href="#principles">原则</a>
+  </div>
+  <div style="margin-top: 20px; opacity: 0.5; font-size: 11px;">
+    Generated 2026-05-26 · Tian / Claude Opus 4.7 (1M context)
+  </div>
+</footer>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    background: '#131829',
+    primaryColor: '#1a2138',
+    primaryTextColor: '#e5e7eb',
+    primaryBorderColor: '#6366f1',
+    lineColor: '#3b4566',
+    secondaryColor: '#1a2138',
+    tertiaryColor: '#131829',
+    fontFamily: 'SF Mono, monospace',
+    fontSize: '13px'
+  },
+  flowchart: { curve: 'basis', padding: 20 }
+});
+</script>
+
+</body>
+</html>
